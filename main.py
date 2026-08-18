@@ -45,7 +45,7 @@ BOT_TOKEN = "8670114208:AAH6CLCSVto9RET2tElugSQty1bHc9RMKKc"
 VIP_CHANNEL_ID = -1004424341978
 
 # ৩ জন অ্যাডমিনের আইডি যুক্ত করা হয়েছে
-ADMIN_IDS = [8396445315, 7047896730, 7824116455][span_0](start_span)[span_0](end_span)
+ADMIN_IDS = [8396445315, 7047896730, 7824116455]
 
 logging.basicConfig(level=logging.INFO)
 
