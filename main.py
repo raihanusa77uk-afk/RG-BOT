@@ -23,12 +23,13 @@ def keep_alive():
     t.daemon = True
     t.start()
 
+# --- 2. Self-Ping Mechanism (24/7 চালু রাখার জন্য) ---
 def ping_self():
     url = os.environ.get("RENDER_EXTERNAL_URL")
     if not url:
         return
     while True:
-        time.sleep(600)
+        time.sleep(600)  # ১০ মিনিট পর পর পিং করবে
         try:
             requests.get(url)
         except Exception:
@@ -39,12 +40,12 @@ def start_ping_thread():
     t.daemon = True
     t.start()
 
-# --- 2. Bot Configurations ---
+# --- 3. Bot Configurations ---
 BOT_TOKEN = "8670114208:AAH6CLCSVto9RET2tElugSQty1bHc9RMKKc"
 VIP_CHANNEL_ID = -1004424341978
 
-# ⚠️ আপনার এবং বাকি অ্যাডমিনদের Telegram Numeric User ID এখানে দিন
-ADMIN_IDS = [123456789, 987654321] 
+# ৩ জন অ্যাডমিনের আইডি যুক্ত করা হয়েছে
+ADMIN_IDS = [8396445315, 7047896730, 7824116455][span_0](start_span)[span_0](end_span)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -61,12 +62,6 @@ def save_allowed_ids(ids_list):
         for tid in ids_list:
             f.write(f"{tid}\n")
 
-def save_user_id(user_id):
-    users = get_all_users()
-    if str(user_id) not in users:
-        with open("users.txt", "a") as f:
-            f.write(f"{user_id}\n")
-
 def get_all_users():
     try:
         with open("users.txt", "r") as f:
@@ -74,9 +69,16 @@ def get_all_users():
     except FileNotFoundError:
         return []
 
+def save_user_id(user_id):
+    users = get_all_users()
+    if str(user_id) not in users:
+        with open("users.txt", "a") as f:
+            f.write(f"{user_id}\n")
+
 # --- User Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    save_user_id(update.effective_user.id)
+    if update.effective_user:
+        save_user_id(update.effective_user.id)
     welcome_text = (
         "👋 **Binary VIP Verification Bot-এ স্বাগতম!**\n\n"
         "আমাদের VIP গ্রুপে যুক্ত হতে আপনার **Trader ID** পাঠান (যেমন: 123456)।"
@@ -84,23 +86,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    save_user_id(update.effective_user.id)
+    if update.effective_user:
+        save_user_id(update.effective_user.id)
+    
     user_id_input = update.message.text.strip()
     allowed_ids = get_allowed_ids()
     
     if user_id_input in allowed_ids:
         await update.message.reply_text("✅ আপনার Trader ID সঠিক পাওয়া গেছে! VIP ইনভাইট লিংক তৈরি হচ্ছে...")
         try:
-            # ১ জন মেম্বার এবং ২৪ ঘণ্টার মেয়াদ সহ ইনভাইট লিংক
-            expire_date = int(time.time()) + 86400  # 24 Hours
+            expire_time = int(time.time()) + 86400  # ২৪ ঘণ্টা মেয়াদী
             invite_link = await context.bot.create_chat_invite_link(
                 chat_id=VIP_CHANNEL_ID,
                 member_limit=1,
-                expire_date=expire_date
+                expire_date=expire_time
             )
             await update.message.reply_text(
                 f"🎉 অভিনন্দন! আপনার VIP গ্রুপের ইনভাইট লিংক:\n\n{invite_link.invite_link}\n\n"
-                "⚠️ *নোট: এই লিংকটি ১ বার ব্যবহারযোগ্য এবং আগামী ২৪ ঘণ্টা পর্যন্ত কার্যকর থাকবে।*",
+                "⚠️ *নোট: এই লিংকটি ১ বার ব্যবহারযোগ্য এবং ২৪ ঘণ্টা পর্যন্ত কার্যকর থাকবে।*",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -118,14 +121,14 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     help_text = (
-        "⚙️ **Advanced Admin Panel**\n\n"
-        "• `/add <ID>` - আইডি যোগ করুন\n"
-        "• `/remove <ID>` - আইডি মুছুন\n"
-        "• `/search <ID>` - আইডি চেক করুন\n"
-        "• `/list` - নিবন্ধিত সব আইডির তালিকা\n"
-        "• `/stats` - বটের মেম্বার সংখ্যা ও ডাটা\n"
-        "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ পাঠান\n"
-        "• **ফাইল আপলোড:** `.txt` ফাইল পাঠালে একসাথে অনেক আইডি যোগ হবে।"
+        "⚙️ **Admin Panel Menu**\n\n"
+        "• `/add <ID>` - নতুন আইডি যুক্ত করতে\n"
+        "• `/remove <ID>` - আইডি মুছে ফেলতে\n"
+        "• `/search <ID>` - আইডি চেক করতে\n"
+        "• `/list` - সব আইডির তালিকা দেখতে\n"
+        "• `/stats` - মেম্বার সংখ্যা দেখতে\n"
+        "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ দিতে\n"
+        "• **ফাইল আপলোড:** `.txt` ফাইল পাঠালে ভেতরের সব ID সেভ হবে।"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -134,25 +137,25 @@ async def add_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not context.args:
-        await update.message.reply_text("⚠️ ব্যবহার পদ্ধতি: `/add 123456`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/add 123456`", parse_mode="Markdown")
         return
 
     new_id = context.args[0].strip()
     allowed_ids = get_allowed_ids()
 
     if new_id in allowed_ids:
-        await update.message.reply_text("⚠️ এই Trader ID-টি আগেই যুক্ত আছে।")
+        await update.message.reply_text("⚠️ এই Trader ID-টি আগেই তালিকায় যুক্ত আছে।")
     else:
         allowed_ids.append(new_id)
         save_allowed_ids(allowed_ids)
-        await update.message.reply_text(f"✅ Trader ID `{new_id}` সফলভাবে যোগ করা হয়েছে!", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Trader ID `{new_id}` সফলভাবে তালিকায় যুক্ত হয়েছে!", parse_mode="Markdown")
 
 async def remove_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ ব্যবহার পদ্ধতি: `/remove 123456`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/remove 123456`", parse_mode="Markdown")
         return
 
     target_id = context.args[0].strip()
@@ -170,7 +173,7 @@ async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ ব্যবহার পদ্ধতি: `/search 123456`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/search 123456`", parse_mode="Markdown")
         return
 
     target_id = context.args[0].strip()
@@ -190,11 +193,8 @@ async def list_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📂 তালিকায় কোনো Trader ID নেই।")
         return
 
-    ids_text = "\n".join([f"• `{tid}`" for tid in allowed_ids[:50]]) # প্রথম ৫০টি দেখাবে
-    await update.message.reply_text(
-        f"📋 **অনুমোদিত ID (মোট {len(allowed_ids)} টি):**\n\n{ids_text}", 
-        parse_mode="Markdown"
-    )
+    ids_text = "\n".join([f"• `{tid}`" for tid in allowed_ids[:50]])
+    await update.message.reply_text(f"📋 **অনুমোদিত ID (মোট {len(allowed_ids)} টি):**\n\n{ids_text}", parse_mode="Markdown")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -206,7 +206,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stat_msg = (
         "📊 **Bot Statistics**\n\n"
         f"• মোট অনুমোদিত Trader ID: `{len(allowed_ids)}` টি\n"
-        f"• বট স্টার্ট করা মোট ইউজার: `{len(users)}` জন"
+        f"• মোট ব্যবহারকারী (Users): `{len(users)}` জন"
     )
     await update.message.reply_text(stat_msg, parse_mode="Markdown")
 
@@ -215,7 +215,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ ব্যবহার পদ্ধতি: `/broadcast আপনার মেসেজ`", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/broadcast আপনার মেসেজ`", parse_mode="Markdown")
         return
 
     msg = " ".join(context.args)
@@ -229,14 +229,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে নোটিশটি পাঠানো হয়েছে।", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে বার্তা পাঠানো হয়েছে।", parse_mode="Markdown")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
 
     doc = update.message.document
-    if doc.file_name.endswith('.txt'):
+    if doc and doc.file_name and doc.file_name.endswith('.txt'):
         file = await context.bot.get_file(doc.file_id)
         content = await file.download_as_bytearray()
         lines = content.decode('utf-8').splitlines()
@@ -250,7 +250,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 count += 1
                 
         save_allowed_ids(allowed_ids)
-        await update.message.reply_text(f"📁 ফাইল থেকে নতুন `{count}` টি Trader ID যুক্ত করা হয়েছে!", parse_mode="Markdown")
+        await update.message.reply_text(f"📁 ফাইল থেকে নতুন `{count}` টি Trader ID যুক্ত হয়েছে!", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ শুধুমাত্র `.txt` ফাইল আপলোড করুন।")
 
@@ -261,10 +261,8 @@ def main():
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # User Handlers
+    # Handlers
     app.add_handler(CommandHandler("start", start))
-    
-    # Admin Handlers
     app.add_handler(CommandHandler("admin", admin_help))
     app.add_handler(CommandHandler("add", add_id))
     app.add_handler(CommandHandler("remove", remove_id))
@@ -273,14 +271,12 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     
-    # File Handler for Admins
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    
-    # Text Verification
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, verify_id))
     
-    print("Advanced VIP Bot is running...")
+    print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
