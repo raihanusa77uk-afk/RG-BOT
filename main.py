@@ -133,9 +133,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/search <ID>` - আইডি চেক করতে\n"
         "• `/list` - সব আইডির তালিকা দেখতে\n"
         "• `/stats` - মেম্বার সংখ্যা দেখতে\n"
-        "• `/clear` - আগের সব Trader ID একসাথে মুছে ফেলতে\n"
+        "• `/clear` - ডাটাবেজের সব ID একসাথে মুছে ফেলতে\n"
         "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ দিতে\n"
-        "• **ফাইল আপলোড:** শুধুমাত্র ভেরিফাইড এবং ডিপোজিট করা Trader ID-র `.xlsx`, `.csv` বা `.txt` ফাইল পাঠাবেন।"
+        "• **ফাইল আপলোড:** `.xlsx`, `.csv` ফাইল আপলোড করলে বট ফিল্টার করে শুধু ডিপোজিটকৃত ID সেভ করবে।"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -180,7 +180,7 @@ async def clear_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     save_allowed_ids([])
-    await update.message.reply_text("🧹 ডাটাবেজের পূর্বের সকল Trader ID সফলভাবে মুছে ফেলা হয়েছে। এখন নতুন সঠিক ফাইল আপলোড করুন।")
+    await update.message.reply_text("🧹 ডাটাবেজের আগের সব Trader ID মুছে ফেলা হয়েছে।")
 
 async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -245,7 +245,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে বার্তা পাঠানো হয়েছে।", parse_mode="Markdown")
 
-# --- Optimized Document Handler ---
+# --- Smart Filtering Excel / Document Handler ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -260,13 +260,35 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extracted_ids = []
 
         try:
-            if file_name.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(io.BytesIO(content))
-                # শুধু প্রথম কলাম বা ID কলাম রিড করবে
-                extracted_ids = df.iloc[:, 0].dropna().astype(str).tolist()
-            elif file_name.endswith('.csv'):
-                df = pd.read_csv(io.BytesIO(content))
-                extracted_ids = df.iloc[:, 0].dropna().astype(str).tolist()
+            if file_name.endswith(('.xlsx', '.xls', '.csv')):
+                if file_name.endswith('.csv'):
+                    df = pd.read_csv(io.BytesIO(content))
+                else:
+                    df = pd.read_excel(io.BytesIO(content))
+
+                # কলামের নামগুলো ছোট হাতের অক্ষরে রূপান্তর
+                df.columns = [str(col).strip().lower() for col in df.columns]
+
+                id_col = None
+                status_col = None
+
+                for col in df.columns:
+                    if 'id' in col or 'trader' in col or 'account' in col:
+                        id_col = col
+                    if 'deposit' in col or 'status' in col or 'amount' in col or 'paid' in col:
+                        status_col = col
+
+                # যদি আইডি কলাম পাওয়া না যায় তবে প্রথম কলাম ধরবে
+                if not id_col:
+                    id_col = df.columns[0]
+
+                if status_col:
+                    # শুধু যারা ডিপোজিট করেছে বা স্ট্যাটাস পজিটিভ তাদের ফিল্টার করবে
+                    valid_rows = df[df[status_col].astype(str).str.contains('yes|true|deposited|success|paid|[1-9]', case=False, na=False)]
+                    extracted_ids = valid_rows[id_col].dropna().astype(str).tolist()
+                else:
+                    extracted_ids = df[id_col].dropna().astype(str).tolist()
+
             elif file_name.endswith('.txt'):
                 lines = content.decode('utf-8', errors='ignore').splitlines()
                 extracted_ids = [line.strip() for line in lines]
@@ -281,13 +303,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     count += 1
 
             save_allowed_ids(allowed_ids)
-            await update.message.reply_text(f"📁 শিট থেকে নতুন `{count}` টি ভ্যালিড Trader ID যুক্ত করা হয়েছে!", parse_mode="Markdown")
+            await update.message.reply_text(f"📁 ফিল্টার করার পর মোট `{count}` টি ডিপোজিটকৃত/ভ্যালিড Trader ID সেভ হয়েছে!", parse_mode="Markdown")
 
         except Exception as e:
-            await update.message.reply_text(f"❌ ফাইল প্রসেস করতে সমস্যা হয়েছে।")
+            await update.message.reply_text("❌ ফাইল প্রসেস করতে সমস্যা হয়েছে। ফাইল ফরম্যাট নিশ্চিত করুন।")
             print(f"File Error: {e}")
     else:
-        await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল আপলোড করুন।")
+        await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল পাঠাবেন।")
 
 # --- Main App ---
 def main():
