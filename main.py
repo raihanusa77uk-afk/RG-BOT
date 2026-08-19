@@ -2,12 +2,14 @@ import logging
 import os
 import requests
 import time
+import io
+import pandas as pd
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- 1. Web Server for Render Free Tier ---
+# --- 1. Web Server setup for Render Free Web Service ---
 web_app = Flask('')
 
 @web_app.route('/')
@@ -23,13 +25,13 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# --- 2. Self-Ping Mechanism (24/7 চালু রাখার জন্য) ---
+# --- 2. Self-Ping Mechanism ---
 def ping_self():
     url = os.environ.get("RENDER_EXTERNAL_URL")
     if not url:
         return
     while True:
-        time.sleep(600)  # ১০ মিনিট পর পর পিং করবে
+        time.sleep(600)
         try:
             requests.get(url)
         except Exception:
@@ -44,7 +46,7 @@ def start_ping_thread():
 BOT_TOKEN = "8670114208:AAH6CLCSVto9RET2tElugSQty1bHc9RMKKc"
 VIP_CHANNEL_ID = -1004424341978
 
-# ৩ জন অ্যাডমিনের আইডি যুক্ত করা হয়েছে
+# অ্যাডমিন আইডি সমূহের তালিকা
 ADMIN_IDS = [8396445315, 7047896730, 7824116455]
 
 logging.basicConfig(level=logging.INFO)
@@ -89,13 +91,18 @@ async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         save_user_id(update.effective_user.id)
     
-    user_id_input = update.message.text.strip()
+    user_input = update.message.text.strip()
+    
+    if not user_input.isdigit():
+        await update.message.reply_text("⚠️ দয়া করে সঠিক Trader ID পাঠান (যেমন: 123456)।")
+        return
+
     allowed_ids = get_allowed_ids()
     
-    if user_id_input in allowed_ids:
+    if user_input in allowed_ids:
         await update.message.reply_text("✅ আপনার Trader ID সঠিক পাওয়া গেছে! VIP ইনভাইট লিংক তৈরি হচ্ছে...")
         try:
-            expire_time = int(time.time()) + 86400  # ২৪ ঘণ্টা মেয়াদী
+            expire_time = int(time.time()) + 86400
             invite_link = await context.bot.create_chat_invite_link(
                 chat_id=VIP_CHANNEL_ID,
                 member_limit=1,
@@ -128,7 +135,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/list` - সব আইডির তালিকা দেখতে\n"
         "• `/stats` - মেম্বার সংখ্যা দেখতে\n"
         "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ দিতে\n"
-        "• **ফাইল আপলোড:** `.txt` ফাইল পাঠালে ভেতরের সব ID সেভ হবে।"
+        "• **ফাইল আপলোড:** `.txt`, `.csv` বা Excel (`.xlsx`) ফাইল পাঠালে স্বয়ংক্রিয়ভাবে সব Trader ID জমা হয়ে যাবে।"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -231,28 +238,48 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে বার্তা পাঠানো হয়েছে।", parse_mode="Markdown")
 
+# --- Excel / CSV / TXT Sheet Document Handler ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
 
     doc = update.message.document
-    if doc and doc.file_name and doc.file_name.endswith('.txt'):
+    file_name = doc.file_name.lower()
+
+    if file_name.endswith(('.xlsx', '.xls', '.csv', '.txt')):
         file = await context.bot.get_file(doc.file_id)
         content = await file.download_as_bytearray()
-        lines = content.decode('utf-8').splitlines()
         
-        allowed_ids = get_allowed_ids()
-        count = 0
-        for line in lines:
-            tid = line.strip()
-            if tid and tid not in allowed_ids:
-                allowed_ids.append(tid)
-                count += 1
-                
-        save_allowed_ids(allowed_ids)
-        await update.message.reply_text(f"📁 ফাইল থেকে নতুন `{count}` টি Trader ID যুক্ত হয়েছে!", parse_mode="Markdown")
+        extracted_ids = []
+
+        try:
+            if file_name.endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(io.BytesIO(content))
+                extracted_ids = df.astype(str).values.flatten().tolist()
+            elif file_name.endswith('.csv'):
+                df = pd.read_csv(io.BytesIO(content))
+                extracted_ids = df.astype(str).values.flatten().tolist()
+            elif file_name.endswith('.txt'):
+                lines = content.decode('utf-8', errors='ignore').splitlines()
+                extracted_ids = [line.strip() for line in lines]
+
+            allowed_ids = get_allowed_ids()
+            count = 0
+
+            for tid in extracted_ids:
+                clean_id = str(tid).strip().split('.')[0] # দশমিক সংখ্যা এড়ানোর জন্য
+                if clean_id.isdigit() and clean_id not in allowed_ids:
+                    allowed_ids.append(clean_id)
+                    count += 1
+
+            save_allowed_ids(allowed_ids)
+            await update.message.reply_text(f"📁 শিট থেকে নতুন `{count}` টি Trader ID যুক্ত করা হয়েছে!", parse_mode="Markdown")
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ ফাইলটি প্রসেস করতে সমস্যা হয়েছে। দয়া করে সঠিক ফরম্যাটের ফাইল আপলোড করুন।")
+            print(f"File Error: {e}")
     else:
-        await update.message.reply_text("❌ শুধুমাত্র `.txt` ফাইল আপলোড করুন।")
+        await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল আপলোড করুন।")
 
 # --- Main App ---
 def main():
@@ -271,12 +298,13 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast))
     
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, verify_id))
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_document))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, verify_id))
     
     print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
 
