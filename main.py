@@ -46,7 +46,6 @@ def start_ping_thread():
 BOT_TOKEN = "8670114208:AAH6CLCSVto9RET2tElugSQty1bHc9RMKKc"
 VIP_CHANNEL_ID = -1004424341978
 
-# অ্যাডমিন আইডি সমূহের তালিকা
 ADMIN_IDS = [8396445315, 7047896730, 7824116455]
 
 logging.basicConfig(level=logging.INFO)
@@ -134,8 +133,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/search <ID>` - আইডি চেক করতে\n"
         "• `/list` - সব আইডির তালিকা দেখতে\n"
         "• `/stats` - মেম্বার সংখ্যা দেখতে\n"
+        "• `/clear` - আগের সব Trader ID একসাথে মুছে ফেলতে\n"
         "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ দিতে\n"
-        "• **ফাইল আপলোড:** `.txt`, `.csv` বা Excel (`.xlsx`) ফাইল পাঠালে স্বয়ংক্রিয়ভাবে সব Trader ID জমা হয়ে যাবে।"
+        "• **ফাইল আপলোড:** শুধুমাত্র ভেরিফাইড এবং ডিপোজিট করা Trader ID-র `.xlsx`, `.csv` বা `.txt` ফাইল পাঠাবেন।"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -174,6 +174,13 @@ async def remove_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🗑️ Trader ID `{target_id}` সফলভাবে মুছে ফেলা হয়েছে।", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ এই Trader ID-টি তালিকায় পাওয়া যায়নি।")
+
+async def clear_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    save_allowed_ids([])
+    await update.message.reply_text("🧹 ডাটাবেজের পূর্বের সকল Trader ID সফলভাবে মুছে ফেলা হয়েছে। এখন নতুন সঠিক ফাইল আপলোড করুন।")
 
 async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -238,7 +245,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে বার্তা পাঠানো হয়েছে।", parse_mode="Markdown")
 
-# --- Excel / CSV / TXT Sheet Document Handler ---
+# --- Optimized Document Handler ---
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return
@@ -255,10 +262,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if file_name.endswith(('.xlsx', '.xls')):
                 df = pd.read_excel(io.BytesIO(content))
-                extracted_ids = df.astype(str).values.flatten().tolist()
+                # শুধু প্রথম কলাম বা ID কলাম রিড করবে
+                extracted_ids = df.iloc[:, 0].dropna().astype(str).tolist()
             elif file_name.endswith('.csv'):
                 df = pd.read_csv(io.BytesIO(content))
-                extracted_ids = df.astype(str).values.flatten().tolist()
+                extracted_ids = df.iloc[:, 0].dropna().astype(str).tolist()
             elif file_name.endswith('.txt'):
                 lines = content.decode('utf-8', errors='ignore').splitlines()
                 extracted_ids = [line.strip() for line in lines]
@@ -267,16 +275,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count = 0
 
             for tid in extracted_ids:
-                clean_id = str(tid).strip().split('.')[0] # দশমিক সংখ্যা এড়ানোর জন্য
+                clean_id = str(tid).strip().split('.')[0]
                 if clean_id.isdigit() and clean_id not in allowed_ids:
                     allowed_ids.append(clean_id)
                     count += 1
 
             save_allowed_ids(allowed_ids)
-            await update.message.reply_text(f"📁 শিট থেকে নতুন `{count}` টি Trader ID যুক্ত করা হয়েছে!", parse_mode="Markdown")
+            await update.message.reply_text(f"📁 শিট থেকে নতুন `{count}` টি ভ্যালিড Trader ID যুক্ত করা হয়েছে!", parse_mode="Markdown")
 
         except Exception as e:
-            await update.message.reply_text(f"❌ ফাইলটি প্রসেস করতে সমস্যা হয়েছে। দয়া করে সঠিক ফরম্যাটের ফাইল আপলোড করুন।")
+            await update.message.reply_text(f"❌ ফাইল প্রসেস করতে সমস্যা হয়েছে।")
             print(f"File Error: {e}")
     else:
         await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল আপলোড করুন।")
@@ -288,11 +296,11 @@ def main():
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_help))
     app.add_handler(CommandHandler("add", add_id))
     app.add_handler(CommandHandler("remove", remove_id))
+    app.add_handler(CommandHandler("clear", clear_ids))
     app.add_handler(CommandHandler("search", search_id))
     app.add_handler(CommandHandler("list", list_ids))
     app.add_handler(CommandHandler("stats", stats))
@@ -306,5 +314,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
