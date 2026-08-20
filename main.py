@@ -63,6 +63,19 @@ def save_allowed_ids(ids_list):
         for tid in ids_list:
             f.write(f"{tid}\n")
 
+def get_used_ids():
+    try:
+        with open("used_ids.txt", "r") as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+def save_used_id(tid):
+    used = get_used_ids()
+    if str(tid) not in used:
+        with open("used_ids.txt", "a") as f:
+            f.write(f"{tid}\n")
+
 def get_all_users():
     try:
         with open("users.txt", "r") as f:
@@ -97,7 +110,13 @@ async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     allowed_ids = get_allowed_ids()
+    used_ids = get_used_ids()
     
+    # Check if ID was already used
+    if user_input in used_ids:
+        await update.message.reply_text("⚠️ এই Trader ID-টি দিয়ে ইতোমধ্যে লিংক গ্রহণ করা হয়েছে! একই আইডি একাধিকবার ব্যবহার করা যাবে না।")
+        return
+
     if user_input in allowed_ids:
         await update.message.reply_text("✅ আপনার Trader ID সঠিক পাওয়া গেছে! VIP ইনভাইট লিংক তৈরি হচ্ছে...")
         try:
@@ -107,6 +126,9 @@ async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 member_limit=1,
                 expire_date=expire_time
             )
+            # Save ID as used
+            save_used_id(user_input)
+            
             await update.message.reply_text(
                 f"🎉 অভিনন্দন! আপনার VIP গ্রুপের ইনভাইট লিংক:\n\n{invite_link.invite_link}\n\n"
                 "⚠️ *নোট: এই লিংকটি ১ বার ব্যবহারযোগ্য এবং ২৪ ঘণ্টা পর্যন্ত কার্যকর থাকবে।*",
@@ -180,7 +202,9 @@ async def clear_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     save_allowed_ids([])
-    await update.message.reply_text("🧹 ডাটাবেজের আগের সব Trader ID মুছে ফেলা হয়েছে।")
+    with open("used_ids.txt", "w") as f:
+        f.write("")
+    await update.message.reply_text("🧹 ডাটাবেজের আগের সব Trader ID এবং ব্যবহৃত লিস্ট মুছে ফেলা হয়েছে।")
 
 async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
@@ -192,9 +216,11 @@ async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_id = context.args[0].strip()
     allowed_ids = get_allowed_ids()
+    used_ids = get_used_ids()
 
+    status = "অব্যবহৃত 🟢" if target_id not in used_ids else "ব্যবহৃত 🔴"
     if target_id in allowed_ids:
-        await update.message.reply_text(f"🔍 **Trader ID `{target_id}` তালিকায় বিদ্যমান আছে!**", parse_mode="Markdown")
+        await update.message.reply_text(f"🔍 **Trader ID `{target_id}` তালিকায় বিদ্যমান আছে!** (স্ট্যাটাস: {status})", parse_mode="Markdown")
     else:
         await update.message.reply_text(f"❌ Trader ID `{target_id}` তালিকায় নেই।", parse_mode="Markdown")
 
@@ -215,11 +241,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     allowed_ids = get_allowed_ids()
+    used_ids = get_used_ids()
     users = get_all_users()
     
     stat_msg = (
         "📊 **Bot Statistics**\n\n"
         f"• মোট অনুমোদিত Trader ID: `{len(allowed_ids)}` টি\n"
+        f"• ব্যবহৃত Trader ID: `{len(used_ids)}` টি\n"
         f"• মোট ব্যবহারকারী (Users): `{len(users)}` জন"
     )
     await update.message.reply_text(stat_msg, parse_mode="Markdown")
@@ -261,33 +289,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             if file_name.endswith(('.xlsx', '.xls', '.csv')):
-                if file_name.endswith('.csv'):
-                    df = pd.read_csv(io.BytesIO(content))
-                else:
-                    df = pd.read_excel(io.BytesIO(content))
+                df = pd.read_csv(io.BytesIO(content)) if file_name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
 
-                # কলামের নামগুলো ছোট হাতের অক্ষরে রূপান্তর
-                df.columns = [str(col).strip().lower() for col in df.columns]
-
-                id_col = None
-                status_col = None
-
-                for col in df.columns:
-                    if 'id' in col or 'trader' in col or 'account' in col:
-                        id_col = col
-                    if 'deposit' in col or 'status' in col or 'amount' in col or 'paid' in col:
-                        status_col = col
-
-                # যদি আইডি কলাম পাওয়া না যায় তবে প্রথম কলাম ধরবে
-                if not id_col:
-                    id_col = df.columns[0]
-
-                if status_col:
-                    # শুধু যারা ডিপোজিট করেছে বা স্ট্যাটাস পজিটিভ তাদের ফিল্টার করবে
-                    valid_rows = df[df[status_col].astype(str).str.contains('yes|true|deposited|success|paid|[1-9]', case=False, na=False)]
-                    extracted_ids = valid_rows[id_col].dropna().astype(str).tolist()
-                else:
-                    extracted_ids = df[id_col].dropna().astype(str).tolist()
+                valid_ids = []
+                for _, row in df.iterrows():
+                    row_str = " ".join(row.dropna().astype(str)).lower()
+                    if any(k in row_str for k in ['deposited', 'yes', 'success', 'true', 'paid']):
+                        valid_ids.append(str(row.iloc[0]))
+                
+                extracted_ids = valid_ids if valid_ids else df.iloc[:, 0].dropna().astype(str).tolist()
 
             elif file_name.endswith('.txt'):
                 lines = content.decode('utf-8', errors='ignore').splitlines()
@@ -303,10 +313,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     count += 1
 
             save_allowed_ids(allowed_ids)
-            await update.message.reply_text(f"📁 ফিল্টার করার পর মোট `{count}` টি ডিপোজিটকৃত/ভ্যালিড Trader ID সেভ হয়েছে!", parse_mode="Markdown")
+            await update.message.reply_text(f"📁 ফিল্টার করার পর মোট `{count}` টি ভ্যালিড Trader ID সেভ হয়েছে!", parse_mode="Markdown")
 
         except Exception as e:
-            await update.message.reply_text("❌ ফাইল প্রসেস করতে সমস্যা হয়েছে। ফাইল ফরম্যাট নিশ্চিত করুন।")
+            await update.message.reply_text("❌ ফাইল প্রসেস করতে সমস্যা হয়েছে।")
             print(f"File Error: {e}")
     else:
         await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল পাঠাবেন।")
