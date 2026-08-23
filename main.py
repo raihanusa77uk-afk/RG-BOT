@@ -94,8 +94,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         save_user_id(update.effective_user.id)
     welcome_text = (
-        "👋 **Binary VIP Verification Bot-এ স্বাগতম!**\n\n"
-        "আমাদের VIP গ্রুপে যুক্ত হতে আপনার **Trader ID** পাঠান (যেমন: 123456)।"
+        "👋 **RG VIP VERIFICATION BOT-এ স্বাগতম!**\n\n"
+        "আমাদের VIP গ্রুপে যুক্ত হতে আপনার **Trader ID** পাঠান (যেমন: 12747796)।"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -106,7 +106,7 @@ async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     
     if not user_input.isdigit():
-        await update.message.reply_text("⚠️ দয়া করে সঠিক Trader ID পাঠান (যেমন: 123456)।")
+        await update.message.reply_text("⚠️ দয়া করে সঠিক Trader ID পাঠান (যেমন: 12737876)।")
         return
 
     allowed_ids = get_allowed_ids()
@@ -130,12 +130,12 @@ async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_used_id(user_input)
             
             await update.message.reply_text(
-                f"🎉 অভিনন্দন! আপনার VIP গ্রুপের ইনভাইট লিংক:\n\n{invite_link.invite_link}\n\n"
+                f"🎉 You Are Verified✅ আপনার VIP গ্রুপের ইনভাইট লিংক:\n\n{invite_link.invite_link}\n\n"
                 "⚠️ *নোট: এই লিংকটি ১ বার ব্যবহারযোগ্য এবং ২৪ ঘণ্টা পর্যন্ত কার্যকর থাকবে।*",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await update.message.reply_text("❌ VIP লিংক তৈরি করতে সমস্যা হচ্ছে। নিশ্চিত করুন বটটি আপনার VIP গ্রুপে Admin পদে আছে।")
+            await update.message.reply_text("❌ স্বাগতম আমাদের VIP Group আপনার জন্য তৈরী। নিশ্চিত করুন বটটি আপনার VIP গ্রুপে Admin পদে আছে।")
             print(f"Error: {e}")
     else:
         await update.message.reply_text(
