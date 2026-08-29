@@ -1,348 +1,407 @@
 import logging
-import os
-import requests
-import time
-import io
-import pandas as pd
-from threading import Thread
-from flask import Flask
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import sqlite3
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    filters,
+)
 
-# --- 1. Web Server setup for Render Free Web Service ---
-web_app = Flask('')
+# Logging Setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-@web_app.route('/')
-def home():
-    return "VIP Verification & Management Bot is Running 24/7!"
+# ================= Configuration (100% Configured) =================
+BOT_TOKEN = "8295039946:AAFgJ9yLjbLV69EN5HRjOW17_kmaYr8c82w"
+ADMIN_ID = 7047896730
+VIP_GROUP_ID = -1004424341978
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
+REFERRAL_LINK = "https://broker-qx.pro/sign-up/?lid=2321846"
+MUST_JOIN_CHANNEL = "@tradingwithraihan_22"          # আপডেট করা পাবলিক চ্যানেল ইউজারনেম
+SUPPORT_USERNAME = "@TR_Support_and_Feedback"        # আপডেট করা সাপোর্ট ইউজারনেম
+DATABASE_NAME = "master_vip_bot.db"
+# ====================================================================
 
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+WAITING_FOR_ID, WAITING_FOR_SCREENSHOT = range(2)
 
-# --- 2. Self-Ping Mechanism ---
-def ping_self():
-    url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not url:
-        return
-    while True:
-        time.sleep(600)
-        try:
-            requests.get(url)
-        except Exception:
-            pass
+# ----------------- Database Setup -----------------
+def init_db():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT,
+            trader_id TEXT,
+            status TEXT DEFAULT 'PENDING',
+            is_blocked INTEGER DEFAULT 0,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS trader_ids (
+            trader_id TEXT PRIMARY KEY,
+            used_by_user_id INTEGER
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
-def start_ping_thread():
-    t = Thread(target=ping_self)
-    t.daemon = True
-    t.start()
+init_db()
 
-# --- 3. Bot Configurations ---
-BOT_TOKEN = "8670114208:AAH6CLCSVto9RET2tElugSQty1bHc9RMKKc"
-VIP_CHANNEL_ID = -1004424341978
+# DB Helpers
+def save_user(user_id, username, full_name):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, full_name) VALUES (?, ?, ?)", 
+                   (user_id, username, full_name))
+    conn.commit()
+    conn.close()
 
-ADMIN_IDS = [8396445315, 7047896730, 7824116455]
+def is_user_blocked(user_id):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_blocked FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] == 1 if row else False
 
-logging.basicConfig(level=logging.INFO)
+def set_block_status(user_id, status_code):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_blocked = ? WHERE user_id = ?", (status_code, user_id))
+    conn.commit()
+    conn.close()
 
-# --- Helper Functions ---
-def get_allowed_ids():
-    try:
-        with open("trader_ids.txt", "r") as f:
-            return [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        return []
+def update_user_status(user_id, trader_id, status):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET trader_id = ?, status = ? WHERE user_id = ?", (trader_id, status, user_id))
+    if status == 'APPROVED':
+        cursor.execute("INSERT OR REPLACE INTO trader_ids (trader_id, used_by_user_id) VALUES (?, ?)", (trader_id, user_id))
+    conn.commit()
+    conn.close()
 
-def save_allowed_ids(ids_list):
-    with open("trader_ids.txt", "w") as f:
-        for tid in ids_list:
-            f.write(f"{tid}\n")
+def is_trader_id_used(trader_id):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT used_by_user_id FROM trader_ids WHERE trader_id = ?", (trader_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
 
-def get_used_ids():
-    try:
-        with open("used_ids.txt", "r") as f:
-            return [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        return []
-
-def save_used_id(tid):
-    used = get_used_ids()
-    if str(tid) not in used:
-        with open("used_ids.txt", "a") as f:
-            f.write(f"{tid}\n")
+def get_db_stats():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users WHERE status = 'APPROVED'")
+    approved = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users WHERE status = 'PENDING'")
+    pending = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 1")
+    blocked = cursor.fetchone()[0]
+    conn.close()
+    return total, approved, pending, blocked
 
 def get_all_users():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE is_blocked = 0")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+# ----------------- Force Channel Join Checker -----------------
+async def check_channel_membership(user_id, context: ContextTypes.DEFAULT_TYPE):
     try:
-        with open("users.txt", "r") as f:
-            return [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        return []
+        member = await context.bot.get_chat_member(chat_id=MUST_JOIN_CHANNEL, user_id=user_id)
+        return member.status in ['creator', 'administrator', 'member']
+    except Exception:
+        return False
 
-def save_user_id(user_id):
-    users = get_all_users()
-    if str(user_id) not in users:
-        with open("users.txt", "a") as f:
-            f.write(f"{user_id}\n")
+# Keyboards
+def get_main_menu_keyboard():
+    keyboard = [
+        [KeyboardButton("🚀 Join VIP Group"), KeyboardButton("🔗 Registration Link")],
+        [KeyboardButton("📖 VIP Signal Rules"), KeyboardButton("📞 Help & Support")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- User Handlers ---
+# ----------------- User Commands -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user:
-        save_user_id(update.effective_user.id)
-    welcome_text = (
-        "👋 **RG VIP VERIFICATION BOT-এ স্বাগতম!**\n\n"
-        "আমাদের VIP গ্রুপে যুক্ত হতে আপনার **Trader ID** পাঠান (যেমন: 12747796)।"
-    )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
-
-async def verify_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user:
-        save_user_id(update.effective_user.id)
+    user = update.effective_user
     
-    user_input = update.message.text.strip()
-    
-    if not user_input.isdigit():
-        await update.message.reply_text("⚠️ দয়া করে সঠিক Trader ID পাঠান (যেমন: 12737876)।")
+    if is_user_blocked(user.id):
+        await update.message.reply_text("🚫 আপনি এই বটটি ব্যবহার করা থেকে সাময়িকভাবে নিষিদ্ধ (Blocked)।")
         return
 
-    allowed_ids = get_allowed_ids()
-    used_ids = get_used_ids()
+    save_user(user.id, user.username, user.full_name)
     
-    # Check if ID was already used
-    if user_input in used_ids:
-        await update.message.reply_text("⚠️ এই Trader ID-টি দিয়ে ইতোমধ্যে লিংক গ্রহণ করা হয়েছে! একই আইডি একাধিকবার ব্যবহার করা যাবে না।")
-        return
-
-    if user_input in allowed_ids:
-        await update.message.reply_text("✅ আপনার Trader ID সঠিক পাওয়া গেছে! VIP ইনভাইট লিংক তৈরি হচ্ছে...")
-        try:
-            expire_time = int(time.time()) + 86400
-            invite_link = await context.bot.create_chat_invite_link(
-                chat_id=VIP_CHANNEL_ID,
-                member_limit=1,
-                expire_date=expire_time
-            )
-            # Save ID as used
-            save_used_id(user_input)
-            
-            await update.message.reply_text(
-                f"🎉 You Are Verified✅ আপনার VIP গ্রুপের ইনভাইট লিংক:\n\n{invite_link.invite_link}\n\n"
-                "⚠️ *নোট: এই লিংকটি ১ বার ব্যবহারযোগ্য এবং ২৪ ঘণ্টা পর্যন্ত কার্যকর থাকবে।*",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            await update.message.reply_text("❌ স্বাগতম আমাদের VIP Group আপনার জন্য তৈরী। নিশ্চিত করুন বটটি আপনার VIP গ্রুপে Admin পদে আছে।")
-            print(f"Error: {e}")
-    else:
+    # Force Join Check
+    is_member = await check_channel_membership(user.id, context)
+    if not is_member:
+        join_btn = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Join Public Channel", url=f"https://t.me/tradingwithraihan_22")]])
         await update.message.reply_text(
-            "❌ **Trader ID পাওয়া যায়নি!**\n\n"
-            "দয়া করে নিশ্চিত করুন আপনার আইডি সঠিক এবং ডিপোজিট সম্পন্ন করেছেন।"
+            f"⚠️ **বটটি ব্যবহার করতে আপনাকে প্রথমে আমাদের মূল চ্যানেলে যুক্ত হতে হবে!**\n\n"
+            f"নিচের বাটনে ক্লিক করে {MUST_JOIN_CHANNEL} জয়েন করুন এবং পুনরায় `/start` টাইপ করুন।",
+            reply_markup=join_btn, parse_mode="Markdown"
         )
-
-# --- Admin Panel Commands ---
-async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    
-    help_text = (
-        "⚙️ **Admin Panel Menu**\n\n"
-        "• `/add <ID>` - নতুন আইডি যুক্ত করতে\n"
-        "• `/remove <ID>` - আইডি মুছে ফেলতে\n"
-        "• `/search <ID>` - আইডি চেক করতে\n"
-        "• `/list` - সব আইডির তালিকা দেখতে\n"
-        "• `/stats` - মেম্বার সংখ্যা দেখতে\n"
-        "• `/clear` - ডাটাবেজের সব ID একসাথে মুছে ফেলতে\n"
-        "• `/broadcast <মেসেজ>` - সব ইউজারকে মেসেজ দিতে\n"
-        "• **ফাইল আপলোড:** `.xlsx`, `.csv` ফাইল আপলোড করলে বট ফিল্টার করে শুধু ডিপোজিটকৃত ID সেভ করবে।"
+
+    welcome_msg = (
+        f"👋 **হ্যালো {user.first_name}!**\n\n"
+        f"আমাদের **Exclusive VIP Trading Bot**-এ আপনাকে স্বাগতম! 📈\n\n"
+        f"প্রতিদিনের হাই-একুরেসি সিগন্যাল ও গাইড পেতে নিচের বাটন ব্যবহার করুন।"
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_msg, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
 
-async def add_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
+# Handle Menu Items
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
-    if not context.args:
-        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/add 123456`", parse_mode="Markdown")
+    if is_user_blocked(user.id):
         return
 
-    new_id = context.args[0].strip()
-    allowed_ids = get_allowed_ids()
+    text = update.message.text.strip()
 
-    if new_id in allowed_ids:
-        await update.message.reply_text("⚠️ এই Trader ID-টি আগেই তালিকায় যুক্ত আছে।")
+    if text == "🚀 Join VIP Group":
+        conn = sqlite3.connect(DATABASE_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM users WHERE user_id = ?", (user.id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row and row[0] == 'APPROVED':
+            await update.message.reply_text(f"🎉 আপনি ইতিমধ্যে VIP গ্রুপের মেম্বার! নতুন লিংকের জন্য সাপোর্ট অ্যাডমিনের সাথে যোগাযোগ করুন: {SUPPORT_USERNAME}")
+            return ConversationHandler.END
+
+        msg = (
+            f"🎯 **VIP গ্রুপে যুক্ত হওয়ার সহজ ধাপসমূহ:**\n\n"
+            f"1️⃣ প্রথমে আমাদের অফিশিয়াল রেজিস্ট্রেশন লিঙ্ক দিয়ে অ্যাকাউন্ট খুলুন:\n👉 {REFERRAL_LINK}\n\n"
+            f"2️⃣ অ্যাকাউন্টে সর্বনিম্ন **$50** ডিপোজিট করুন।\n\n"
+            f"3️⃣ এবার আপনার **8-digit Quotex Trader ID** লিখে পাঠান:"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        return WAITING_FOR_ID
+
+    elif text == "🔗 Registration Link":
+        reg_msg = f"📌 **Quotex Official Sign-Up Link:**\n\n👉 {REFERRAL_LINK}\n\n⚠️ *অবশ্যই এই লিংকের মাধ্যমে একাউন্ট খুলতে হবে।*"
+        await update.message.reply_text(reg_msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+    elif text == "📖 VIP Signal Rules":
+        rules_msg = (
+            f"📊 **VIP Trading Rules:**\n\n"
+            f"1️⃣ **Money Management:** প্রতি ট্রেডে ক্যাপিটালের ২%-৩% ব্যবহার করবেন।\n"
+            f"2️⃣ **Martingale:** সর্বোচ্চ ১ স্টেপ MTG ফলো করবেন।\n"
+            f"3️⃣ **Target:** দৈনিক প্রফিট টার্গেট পূরণ হলে ট্রেডিং অফ রাখুন।"
+        )
+        await update.message.reply_text(rules_msg, parse_mode="Markdown")
+
+    elif text == "📞 Help & Support":
+        support_msg = f"💬 **Customer Support:**\n\nযেকোনো প্রয়োজনে সরাসরি কথা বলুন:\n👨‍💻 Support: {SUPPORT_USERNAME}"
+        await update.message.reply_text(support_msg, parse_mode="Markdown")
+
     else:
-        allowed_ids.append(new_id)
-        save_allowed_ids(allowed_ids)
-        await update.message.reply_text(f"✅ Trader ID `{new_id}` সফলভাবে তালিকায় যুক্ত হয়েছে!", parse_mode="Markdown")
+        await update.message.reply_text("অনুগ্রহ করে নিচের বাটন ব্যবহার করুন।", reply_markup=get_main_menu_keyboard())
 
-async def remove_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
+async def get_trader_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
 
-    if not context.args:
-        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/remove 123456`", parse_mode="Markdown")
-        return
+    if text in ["🚀 Join VIP Group", "🔗 Registration Link", "📖 VIP Signal Rules", "📞 Help & Support"]:
+        return await handle_message(update, context)
 
-    target_id = context.args[0].strip()
-    allowed_ids = get_allowed_ids()
+    if not text.isdigit() or len(text) != 8:
+        await update.message.reply_text("❌ অকার্যকর ID! একটি সঠিক ৮-ডিজিটের Quotex Trader ID টাইপ করুন (যেমন: 90177664):")
+        return WAITING_FOR_ID
 
-    if target_id in allowed_ids:
-        allowed_ids.remove(target_id)
-        save_allowed_ids(allowed_ids)
-        await update.message.reply_text(f"🗑️ Trader ID `{target_id}` সফলভাবে মুছে ফেলা হয়েছে।", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ এই Trader ID-টি তালিকায় পাওয়া যায়নি।")
+    if is_trader_id_used(text):
+        await update.message.reply_text("⚠️ **Trader ID Already Registered!** এই আইডিটি দিয়ে পূর্বে VIP এক্সেস নেওয়া হয়ে গেছে।")
+        return WAITING_FOR_ID
 
-async def clear_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
+    context.user_data['trader_id'] = text
+    await update.message.reply_text("✅ ID পাওয়া গেছে। এবার ডিপোজিটের (Min $50) একটি **Screenshot (ছবি)** পাঠান:")
+    return WAITING_FOR_SCREENSHOT
 
-    save_allowed_ids([])
-    with open("used_ids.txt", "w") as f:
-        f.write("")
-    await update.message.reply_text("🧹 ডাটাবেজের আগের সব Trader ID এবং ব্যবহৃত লিস্ট মুছে ফেলা হয়েছে।")
+async def get_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    trader_id = context.user_data.get('trader_id')
+    photo_file_id = update.message.photo[-1].file_id
 
-async def search_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"app_{user.id}_{trader_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"rej_{user.id}_{trader_id}")
+        ],
+        [InlineKeyboardButton("🚫 Block User", callback_data=f"blk_{user.id}_{trader_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if not context.args:
-        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/search 123456`", parse_mode="Markdown")
-        return
-
-    target_id = context.args[0].strip()
-    allowed_ids = get_allowed_ids()
-    used_ids = get_used_ids()
-
-    status = "অব্যবহৃত 🟢" if target_id not in used_ids else "ব্যবহৃত 🔴"
-    if target_id in allowed_ids:
-        await update.message.reply_text(f"🔍 **Trader ID `{target_id}` তালিকায় বিদ্যমান আছে!** (স্ট্যাটাস: {status})", parse_mode="Markdown")
-    else:
-        await update.message.reply_text(f"❌ Trader ID `{target_id}` তালিকায় নেই।", parse_mode="Markdown")
-
-async def list_ids(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    allowed_ids = get_allowed_ids()
-    if not allowed_ids:
-        await update.message.reply_text("📂 তালিকায় কোনো Trader ID নেই।")
-        return
-
-    ids_text = "\n".join([f"• `{tid}`" for tid in allowed_ids[:50]])
-    await update.message.reply_text(f"📋 **অনুমোদিত ID (মোট {len(allowed_ids)} টি):**\n\n{ids_text}", parse_mode="Markdown")
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    allowed_ids = get_allowed_ids()
-    used_ids = get_used_ids()
-    users = get_all_users()
-    
-    stat_msg = (
-        "📊 **Bot Statistics**\n\n"
-        f"• মোট অনুমোদিত Trader ID: `{len(allowed_ids)}` টি\n"
-        f"• ব্যবহৃত Trader ID: `{len(used_ids)}` টি\n"
-        f"• মোট ব্যবহারকারী (Users): `{len(users)}` জন"
+    caption = (
+        f"📩 **New Verification Request**\n\n"
+        f"👤 **User:** {user.full_name} (@{user.username})\n"
+        f"🆔 **Telegram ID:** `{user.id}`\n"
+        f"🔢 **Trader ID:** `{trader_id}`"
     )
-    await update.message.reply_text(stat_msg, parse_mode="Markdown")
+    
+    await context.bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=photo_file_id,
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+    await update.message.reply_text(
+        "✅ আপনার ভেরিফিকেশন আবেদন অ্যাডমিনের কাছে জমা হয়েছে। যাচাইকরণের পর আপনাকে লিঙ্ক জানিয়ে দেওয়া হবে।",
+        reply_markup=get_main_menu_keyboard()
+    )
+    return ConversationHandler.END
+
+# ----------------- Admin Callback Handler -----------------
+async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data.split("_")
+    action = data[0]
+    user_id = int(data[1])
+    trader_id = data[2]
+
+    if action == "app":
+        try:
+            invite_link_object = await context.bot.create_chat_invite_link(
+                chat_id=VIP_GROUP_ID,
+                member_limit=1,
+                name=f"VIP Access for {user_id}"
+            )
+            single_use_link = invite_link_object.invite_link
+            update_user_status(user_id, trader_id, 'APPROVED')
+
+            welcome_text = (
+                f"🎉 **Congratulations & Welcome aboard!** 🎉\n\n"
+                f"আপনার আইডি (`{trader_id}`) সফলভাবে ভেরিফাই করা হয়েছে।\n\n"
+                f"🔗 **আপনার ব্যক্তিগত VIP Access Link:**\n👉 {single_use_link}\n\n"
+                f"📌 *সতর্কতা:* সিকিউরিটির স্বার্থে এই লিঙ্কটি **মাত্র ১ বার** ব্যবহার করা যাবে।"
+            )
+
+            await context.bot.send_message(chat_id=user_id, text=welcome_text, parse_mode="Markdown")
+            await query.edit_message_caption(caption=query.message.caption + "\n\nSTATUS: ✅ **APPROVED (Invite Link Sent)**")
+
+        except Exception as e:
+            await query.edit_message_caption(caption=query.message.caption + f"\n\n❌ Link Error: {e}")
+            
+    elif action == "rej":
+        try:
+            update_user_status(user_id, trader_id, 'REJECTED')
+            reject_text = f"❌ **Verification Failed!**\n\nআপনার প্রদত্ত Trader ID অথবা Deposit Screenshot সঠিক নয়। সহায়তার জন্য যোগাযোগ করুন: {SUPPORT_USERNAME}"
+            await context.bot.send_message(chat_id=user_id, text=reject_text)
+            await query.edit_message_caption(caption=query.message.caption + "\n\nSTATUS: ❌ **REJECTED**")
+        except Exception as e:
+            await query.edit_message_caption(caption=query.message.caption + f"\n\n❌ Error: {e}")
+
+    elif action == "blk":
+        set_block_status(user_id, 1)
+        await query.edit_message_caption(caption=query.message.caption + "\n\nSTATUS: 🚫 **USER BLOCKED**")
+
+# ----------------- Advanced Admin Tools -----------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    total, approved, pending, blocked = get_db_stats()
+    panel_text = (
+        f"⚙️ **Admin Control Panel**\n\n"
+        f"👥 Total Users: `{total}`\n"
+        f"✅ VIP Approved: `{approved}`\n"
+        f"⏳ Pending Users: `{pending}`\n"
+        f"🚫 Blocked Users: `{blocked}`\n\n"
+        f"**Available Commands:**\n"
+        f"• `/broadcast <text>` - Send msg to all users\n"
+        f"• `/search <trader_id>` - Find user by ID\n"
+        f"• `/block <user_id>` - Ban user\n"
+        f"• `/unblock <user_id>` - Unban user"
+    )
+    await update.message.reply_text(panel_text, parse_mode="Markdown")
+
+async def search_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or not context.args:
+        return
+    tid = context.args[0]
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, full_name, status FROM users WHERE trader_id = ?", (tid,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        msg = f"🔍 **User Found:**\n\nTelegram ID: `{row[0]}`\nName: {row[2]}\nUsername: @{row[1]}\nStatus: `{row[3]}`"
+    else:
+        msg = "❌ কোনো রেকর্ড পাওয়া যায়নি।"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def block_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID and context.args:
+        uid = int(context.args[0])
+        set_block_status(uid, 1)
+        await update.message.reply_text(f"✅ User `{uid}` Blocked Successfully.")
+
+async def unblock_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID and context.args:
+        uid = int(context.args[0])
+        set_block_status(uid, 0)
+        await update.message.reply_text(f"✅ User `{uid}` Unblocked Successfully.")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
+    if update.effective_user.id != ADMIN_ID or not context.args:
         return
-
-    if not context.args:
-        await update.message.reply_text("⚠️ সঠিক নিয়ম: `/broadcast আপনার মেসেজ`", parse_mode="Markdown")
-        return
-
     msg = " ".join(context.args)
-    users = get_all_users()
-    success = 0
-
-    for uid in users:
+    user_ids = get_all_users()
+    succ = 0
+    await update.message.reply_text(f"📢 ব্রডকাস্ট শুরু হয়েছে...")
+    for uid in user_ids:
         try:
-            await context.bot.send_message(chat_id=int(uid), text=f"📢 **অফিসিয়াল নোটিশ:**\n\n{msg}", parse_mode="Markdown")
-            success += 1
+            await context.bot.send_message(chat_id=uid, text=msg, parse_mode="Markdown")
+            succ += 1
         except Exception:
             pass
+    await update.message.reply_text(f"✅ ব্রডকাস্ট সম্পন্ন। প্রাপ্তি: `{succ}` জন।")
 
-    await update.message.reply_text(f"✅ সর্বমোট `{success}` জন ইউজারের কাছে বার্তা পাঠানো হয়েছে।", parse_mode="Markdown")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("প্রক্রিয়াটি বাতিল করা হয়েছে।", reply_markup=get_main_menu_keyboard())
+    return ConversationHandler.END
 
-# --- Smart Filtering Excel / Document Handler ---
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-
-    doc = update.message.document
-    file_name = doc.file_name.lower()
-
-    if file_name.endswith(('.xlsx', '.xls', '.csv', '.txt')):
-        file = await context.bot.get_file(doc.file_id)
-        content = await file.download_as_bytearray()
-        
-        extracted_ids = []
-
-        try:
-            if file_name.endswith(('.xlsx', '.xls', '.csv')):
-                df = pd.read_csv(io.BytesIO(content)) if file_name.endswith('.csv') else pd.read_excel(io.BytesIO(content))
-
-                valid_ids = []
-                for _, row in df.iterrows():
-                    row_str = " ".join(row.dropna().astype(str)).lower()
-                    if any(k in row_str for k in ['deposited', 'yes', 'success', 'true', 'paid']):
-                        valid_ids.append(str(row.iloc[0]))
-                
-                extracted_ids = valid_ids if valid_ids else df.iloc[:, 0].dropna().astype(str).tolist()
-
-            elif file_name.endswith('.txt'):
-                lines = content.decode('utf-8', errors='ignore').splitlines()
-                extracted_ids = [line.strip() for line in lines]
-
-            allowed_ids = get_allowed_ids()
-            count = 0
-
-            for tid in extracted_ids:
-                clean_id = str(tid).strip().split('.')[0]
-                if clean_id.isdigit() and clean_id not in allowed_ids:
-                    allowed_ids.append(clean_id)
-                    count += 1
-
-            save_allowed_ids(allowed_ids)
-            await update.message.reply_text(f"📁 ফিল্টার করার পর মোট `{count}` টি ভ্যালিড Trader ID সেভ হয়েছে!", parse_mode="Markdown")
-
-        except Exception as e:
-            await update.message.reply_text("❌ ফাইল প্রসেস করতে সমস্যা হয়েছে।")
-            print(f"File Error: {e}")
-    else:
-        await update.message.reply_text("❌ শুধুমাত্র `.xlsx`, `.csv` অথবা `.txt` ফাইল পাঠাবেন।")
-
-# --- Main App ---
+# ----------------- Execution -----------------
 def main():
-    keep_alive()
-    start_ping_thread()
-    
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_help))
-    app.add_handler(CommandHandler("add", add_id))
-    app.add_handler(CommandHandler("remove", remove_id))
-    app.add_handler(CommandHandler("clear", clear_ids))
-    app.add_handler(CommandHandler("search", search_id))
-    app.add_handler(CommandHandler("list", list_ids))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    
-    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_document))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, verify_id))
-    
-    print("Bot is running...")
+
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^🚀 Join VIP Group$"), handle_message)],
+        states={
+            WAITING_FOR_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_trader_id)],
+            WAITING_FOR_SCREENSHOT: [MessageHandler(filters.PHOTO, get_screenshot)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('admin', admin_panel))
+    app.add_handler(CommandHandler('search', search_user))
+    app.add_handler(CommandHandler('block', block_user_cmd))
+    app.add_handler(CommandHandler('unblock', unblock_user_cmd))
+    app.add_handler(CommandHandler('broadcast', broadcast))
+    app.add_handler(conv_handler)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(admin_decision))
+
+    print("Master VIP Bot Status: ONLINE and Ready!")
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
